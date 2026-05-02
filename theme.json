@@ -1,0 +1,16 @@
+{
+  "id": "PIP Customizations",
+  "name": "Zen Sidebar PiP",
+  "description": "Replaces the Zen music controller with a live video stream of the active tab.",
+  "author": "YourName",
+  "version": "0.1.0",
+  "scripts": {
+    "main.uc.js": {
+      "name": "Zen Sidebar PiP Main",
+      "description": "Sidebar UI hijack and JSWindowActor registration",
+      "include": ["chrome://browser/content/browser.xhtml"]
+    }
+  },
+  "tags": ["Javascript"],
+  "fork": ["zen"]
+}
