@@ -4,88 +4,119 @@
 // @description    Hooks into Zen's sidebar to render active video streams.
 // ==/UserScript==
 
-console.log("[ZenPiP] main.uc.js TOP-LEVEL executed");
-
 (function () {
-  // Prevent multiple injections if the script reloads
   if (window.__zenSidebarPiPLoaded) return;
   window.__zenSidebarPiPLoaded = true;
 
-  // 1. Hijack the Zen Sidebar DOM
-  // Note: You will need to use the Browser Toolbox (Cmd+Opt+Shift+I)
-  // to find the exact ID or class of Zen's music player element.
-  const musicPlayerUI =
-    document.querySelector("#zen-media-controls-toolbar") || document.querySelector(".zen-sidebar-bottom-buttons");
+  const LOG_PREFIX = "[ZenPiP]";
+  const log = (...a) => console.log(LOG_PREFIX, ...a);
+  const warn = (...a) => console.warn(LOG_PREFIX, ...a);
+  const err = (...a) => console.error(LOG_PREFIX, ...a);
+  const safe = (fn) => { try { return fn(); } catch (_) { return undefined; } };
 
+  const CONFIG = Object.freeze({
+    GAP: 6,
+    ANIM_MS: 220,
+    ANIM_TAIL_MS: 350,
+    ELEVATED_HOLD_MS: 180,
+    MAX_HEIGHT: 600,
+    DEFAULT_ASPECT: 16 / 9,
+    PIP_OPEN_DEBOUNCE_MS: 1500,
+    PIP_OBSERVE_TIMEOUT_MS: 3000,
+  });
+  const ANIM_TRANSITION = `opacity ${CONFIG.ANIM_MS}ms ease, transform ${CONFIG.ANIM_MS}ms ease`;
+
+  const MUSIC_PLAYER_SELECTORS = "#zen-media-controls-toolbar, .zen-sidebar-bottom-buttons";
+  const TAB_LIST_SELECTORS = "#tabbrowser-arrowscrollbox, #zen-tabs-wrapper, #tabbrowser-tabs";
+  const PIP_BUTTON_SELECTORS = [
+    '[id*="pictureinpicture" i]',
+    '[class*="pictureinpicture" i]',
+    '[command*="pictureinpicture" i]',
+    '[id*="pip" i]',
+    '[class*="pip" i]',
+    '[anonid*="pictureinpicture" i]',
+  ].join(",");
+
+  const musicPlayerUI = document.querySelector(MUSIC_PLAYER_SELECTORS);
   if (!musicPlayerUI) {
-    console.error("Zen Sidebar PiP: Could not find the music player UI.");
+    err("Could not find the music player UI.");
     return;
   }
 
-  // 2. Create the PiP Video Container
+  // Inject a single stylesheet rather than inlining cssText on every node.
+  const styleEl = document.createElement("style");
+  styleEl.textContent = `
+    #zen-sidebar-pip-container {
+      position: fixed;
+      background: transparent;
+      display: none;
+      border-radius: var(--zen-border-radius);
+      overflow: hidden;
+      contain: size layout;
+      z-index: 10;
+      pointer-events: none;
+      transform-origin: 50% 100%;
+      will-change: opacity, transform;
+    }
+    #zen-sidebar-pip-container > video {
+      width: 100%;
+      height: 100%;
+      max-width: 100%;
+      max-height: 100%;
+      min-width: 0;
+      min-height: 0;
+      object-fit: contain;
+      display: block;
+    }
+  `;
+  document.documentElement.appendChild(styleEl);
+
   const pipContainer = document.createElement("div");
   pipContainer.id = "zen-sidebar-pip-container";
-  pipContainer.style.cssText = `
-        position: fixed;
-        background: transparent;
-        display: none; /* Hidden until video plays */
-        border-radius: var(--zen-border-radius);
-        overflow: hidden;
-        contain: size layout;
-        z-index: 10;
-        pointer-events: auto;
-        cursor: pointer;
-        transform-origin: 50% 100%;
-        will-change: opacity, transform;
-    `;
-
   const videoEl = document.createElement("video");
   videoEl.autoplay = true;
-  videoEl.muted = true; // Prevent echo from the original tab
-  videoEl.style.cssText = `
-        width: 100%;
-        height: 100%;
-        max-width: 100%;
-        max-height: 100%;
-        min-width: 0;
-        min-height: 0;
-        object-fit: contain;
-        display: block;
-    `;
-
+  videoEl.muted = true;
   pipContainer.appendChild(videoEl);
-
-  // Float the container in the chrome window so it can track the music
-  // player's position even when other mods translate/animate the player.
   document.documentElement.appendChild(pipContainer);
 
-  const GAP = 6; // px between video bottom and music player top
-  const ANIM_TAIL_MS = 350; // keep ticking briefly after a state change
-  const ELEVATED_HOLD_MS = 180; // hold elevated top through brief glitch frames
-  let lastTop = -1,
-    lastLeft = -1,
-    lastWidth = -1;
-  let lastVisible = null,
-    lastOpacityStr = "";
+  // Position state
+  let lastTop = -1, lastLeft = -1, lastWidth = -1;
+  let lastVisible = null;
+  let lastOpacity = NaN;
   let isStreaming = false;
   let userHidden = false;
   let scheduled = false;
-  let activeUntil = 0; // ms timestamp; rAF re-schedules until then
+  let activeUntil = 0;
   let hoverActive = false;
-  let lastElevatedTop = null; // most recent top from a popup-extended frame
-  let lastElevatedAt = 0; // ms timestamp of that frame
+  let lastElevatedTop = null;
+  let lastElevatedAt = 0;
   let animating = false;
   let animateOutTimer = null;
-  let videoAspect = 16 / 9; // updated from videoEl metadata
+  let videoAspect = CONFIG.DEFAULT_ASPECT;
+
   videoEl.addEventListener("loadedmetadata", () => {
     if (videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
       videoAspect = videoEl.videoWidth / videoEl.videoHeight;
-      lastTop = lastLeft = lastWidth = -1; // force re-layout
+      lastTop = lastLeft = lastWidth = -1;
       bump();
     }
   });
-  const ANIM_MS = 220;
-  const ANIM_TRANSITION = `opacity ${ANIM_MS}ms ease, transform ${ANIM_MS}ms ease`;
+
+  // Pad the tab list so the last tabs can scroll above the floating video.
+  let tabListCache = null;
+  function getTabList() {
+    if (tabListCache && tabListCache.isConnected) return tabListCache;
+    tabListCache = document.querySelector(TAB_LIST_SELECTORS);
+    return tabListCache;
+  }
+  let lastTabPad = -1;
+  function setTabListPadding(px) {
+    if (px === lastTabPad) return;
+    const list = getTabList();
+    if (!list) return;
+    lastTabPad = px;
+    list.style.paddingBottom = px ? px + "px" : "";
+  }
 
   function getMediaTopEdge(walkDescendants) {
     const baseRect = musicPlayerUI.getBoundingClientRect();
@@ -97,12 +128,7 @@ console.log("[ZenPiP] main.uc.js TOP-LEVEL executed");
         if (r.width !== 0 && r.height !== 0 && r.top < top) top = r.top;
       }
     }
-    return {
-      top,
-      baseTop: baseRect.top,
-      left: baseRect.left,
-      width: baseRect.width,
-    };
+    return { top, baseTop: baseRect.top, left: baseRect.left, width: baseRect.width };
   }
 
   function getMediaPlayerVisibility() {
@@ -134,65 +160,58 @@ console.log("[ZenPiP] main.uc.js TOP-LEVEL executed");
       lastVisible = effectivelyVisible;
     }
     if (!animating) {
-      const opStr = userHidden ? "0" : String(opacity);
-      if (opStr !== lastOpacityStr) {
-        pipContainer.style.opacity = opStr;
-        lastOpacityStr = opStr;
+      const op = userHidden ? 0 : opacity;
+      if (op !== lastOpacity) {
+        pipContainer.style.opacity = String(op);
+        lastOpacity = op;
       }
     }
 
     if (effectivelyVisible) {
-      // Always walk descendants — the popup-open state isn't always inside
-      // an "animation tail", and skipping the walk causes the video to drop
-      // onto the controls. The walk is a single querySelectorAll over a
-      // small toolbar; cost is negligible vs. the previous flicker.
       const { top: mediaTopRaw, baseTop, left, width: playerWidth } = getMediaTopEdge(true);
       if (playerWidth !== 0) {
-        // Fit the video's natural aspect into a box capped by the player's
-        // width and the 16:9 height that width would imply. Vertical videos
-        // shrink in width and stay centered over the player; landscape fills.
-        const maxHeight = 600;
+        // Fit the video into a box capped by player width and MAX_HEIGHT.
         let width = playerWidth;
         let height = width / videoAspect;
-        if (height > maxHeight) {
-          height = maxHeight;
+        if (height > CONFIG.MAX_HEIGHT) {
+          height = CONFIG.MAX_HEIGHT;
           width = height * videoAspect;
         }
         const adjustedLeft = left + (playerWidth - width) / 2;
-        // Decide which mediaTop to use. If the walk surfaced an elevated
-        // (above-base) top, trust it and remember it. If it didn't, but we
-        // saw an elevated top very recently, treat this frame as a glitch
-        // and hold the elevated value — re-poll until the hold expires.
+
+        // Hold an elevated (popup-extended) top through brief glitch frames
+        // where the descendant walk doesn't surface it.
         const now = performance.now();
         let mediaTop = mediaTopRaw;
         if (mediaTopRaw < baseTop - 1) {
           lastElevatedTop = mediaTopRaw;
           lastElevatedAt = now;
-        } else if (lastElevatedTop !== null && now - lastElevatedAt < ELEVATED_HOLD_MS) {
+        } else if (lastElevatedTop !== null && now - lastElevatedAt < CONFIG.ELEVATED_HOLD_MS) {
           mediaTop = lastElevatedTop;
           schedule();
         } else {
           lastElevatedTop = null;
         }
 
-        const top = mediaTop - GAP - height;
+        const top = mediaTop - CONFIG.GAP - height;
         if (top !== lastTop || adjustedLeft !== lastLeft || width !== lastWidth) {
-          pipContainer.style.width = width + "px";
-          pipContainer.style.height = height + "px";
-          pipContainer.style.left = adjustedLeft + "px";
-          pipContainer.style.top = top + "px";
+          const s = pipContainer.style;
+          s.width = width + "px";
+          s.height = height + "px";
+          s.left = adjustedLeft + "px";
+          s.top = top + "px";
           lastTop = top;
           lastLeft = adjustedLeft;
           lastWidth = width;
-          // Position is moving — keep ticking through the animation tail.
-          activeUntil = performance.now() + ANIM_TAIL_MS;
+          activeUntil = now + CONFIG.ANIM_TAIL_MS;
         }
+        setTabListPadding(userHidden ? 0 : Math.ceil(height + CONFIG.GAP * 2));
       }
+    } else {
+      setTabListPadding(0);
     }
 
-    if (isStreaming && (hoverActive || performance.now() < activeUntil)) {
-      schedule();
-    }
+    if (hoverActive || performance.now() < activeUntil) schedule();
   }
 
   function schedule() {
@@ -202,14 +221,14 @@ console.log("[ZenPiP] main.uc.js TOP-LEVEL executed");
   }
 
   function bump() {
-    activeUntil = performance.now() + ANIM_TAIL_MS;
+    activeUntil = performance.now() + CONFIG.ANIM_TAIL_MS;
     schedule();
   }
 
   function startTracking() {
     lastTop = lastLeft = lastWidth = -1;
     lastVisible = null;
-    lastOpacityStr = "";
+    lastOpacity = NaN;
     bump();
   }
   function stopTracking() {
@@ -217,26 +236,21 @@ console.log("[ZenPiP] main.uc.js TOP-LEVEL executed");
     hoverActive = false;
     lastElevatedTop = null;
     lastElevatedAt = 0;
+    setTabListPadding(0);
   }
 
   // Event-driven triggers — far cheaper than polling every frame.
-  musicPlayerUI.addEventListener("mouseenter", () => {
-    hoverActive = true;
-    bump();
-  });
-  musicPlayerUI.addEventListener("mouseleave", () => {
-    hoverActive = false;
-    bump(); // animate back down
-  });
-  musicPlayerUI.addEventListener("transitionrun", bump);
-  musicPlayerUI.addEventListener("transitionend", bump);
-  musicPlayerUI.addEventListener("animationstart", bump);
-  musicPlayerUI.addEventListener("animationend", bump);
+  musicPlayerUI.addEventListener("mouseenter", () => { hoverActive = true; bump(); });
+  musicPlayerUI.addEventListener("mouseleave", () => { hoverActive = false; bump(); });
+  for (const ev of ["transitionrun", "transitionend", "animationstart", "animationend"]) {
+    musicPlayerUI.addEventListener(ev, bump);
+  }
 
-  try {
-    new ResizeObserver(bump).observe(musicPlayerUI);
-    new ResizeObserver(bump).observe(document.documentElement);
-  } catch (e) {}
+  safe(() => {
+    const ro = new ResizeObserver(bump);
+    ro.observe(musicPlayerUI);
+    ro.observe(document.documentElement);
+  });
 
   new MutationObserver(bump).observe(musicPlayerUI, {
     attributes: true,
@@ -244,9 +258,7 @@ console.log("[ZenPiP] main.uc.js TOP-LEVEL executed");
   });
   window.addEventListener("resize", bump);
 
-  // Inject toggle button (eye / eye-off) into the media controls.
-  // Use list-style-image so the icon flows through the same .toolbarbutton-icon
-  // slot as the other expanded buttons — that's what gets centered by Zen's CSS.
+  // Toggle button (eye / eye-off) injected next to the existing PiP button.
   const EYE_SVG =
     "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='context-fill' fill-opacity='context-fill-opacity'>" +
     "<path d='M12 5c-7 0-11 7-11 7s4 7 11 7 11-7 11-7-4-7-11-7zm0 11a4 4 0 1 1 0-8 4 4 0 0 1 0 8z'/></svg>";
@@ -254,48 +266,31 @@ console.log("[ZenPiP] main.uc.js TOP-LEVEL executed");
     "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='context-fill' fill-opacity='context-fill-opacity'>" +
     "<path d='M2 2l20 20-1.4 1.4-3.5-3.5A12 12 0 0 1 12 21C5 21 1 14 1 14a20 20 0 0 1 4.6-5.6L.6 3.4 2 2zm10 6a4 4 0 0 1 4 4c0 .6-.1 1.1-.3 1.6l-5.3-5.3c.5-.2 1-.3 1.6-.3zM12 5c7 0 11 7 11 7a20 20 0 0 1-3.7 4.6l-2.1-2.1A8 8 0 0 0 12 7c-.7 0-1.4.1-2 .3L7.7 5C9 4.4 10.4 5 12 5z'/></svg>";
   const eyeUrl = (svg) => `url("data:image/svg+xml;utf8,${encodeURIComponent(svg)}")`;
+  const EYE_URL = eyeUrl(EYE_SVG);
+  const EYE_OFF_URL = eyeUrl(EYE_OFF_SVG);
+  const STRIPPED_ATTRS = ["command", "oncommand", "onclick", "data-l10n-id", "style"];
 
   let toggleBtn = null;
-
   function buildToggle(template) {
-    // Clone deep so we get the inner .toolbarbutton-icon image element that
-    // Zen's CSS centers and sizes.
     const btn = template.cloneNode(true);
     btn.id = "zen-sidebar-pip-toggle";
     btn.setAttribute("tooltiptext", "Toggle sidebar PiP");
-    btn.removeAttribute("command");
-    btn.removeAttribute("oncommand");
-    btn.removeAttribute("onclick");
-    btn.removeAttribute("data-l10n-id");
-    btn.removeAttribute("style");
-    btn.style.listStyleImage = eyeUrl(EYE_SVG);
-
+    for (const a of STRIPPED_ATTRS) btn.removeAttribute(a);
+    btn.style.listStyleImage = EYE_URL;
     btn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
       userHidden = !userHidden;
-      btn.style.listStyleImage = eyeUrl(userHidden ? EYE_OFF_SVG : EYE_SVG);
-      // Force an immediate visibility/opacity sync so the toggle feels instant.
+      btn.style.listStyleImage = userHidden ? EYE_OFF_URL : EYE_URL;
       bump();
     });
-
     toggleBtn = btn;
     return btn;
   }
 
   function findExistingPipButton() {
-    const selectors = [
-      '[id*="pictureinpicture" i]',
-      '[class*="pictureinpicture" i]',
-      '[command*="pictureinpicture" i]',
-      '[id*="pip" i]',
-      '[class*="pip" i]',
-      '[anonid*="pictureinpicture" i]',
-    ];
-    for (const sel of selectors) {
-      const found = musicPlayerUI.querySelector(sel);
-      if (found && found !== toggleBtn) return found;
-    }
+    const candidates = musicPlayerUI.querySelectorAll(PIP_BUTTON_SELECTORS);
+    for (const c of candidates) if (c !== toggleBtn) return c;
     return null;
   }
 
@@ -311,104 +306,58 @@ console.log("[ZenPiP] main.uc.js TOP-LEVEL executed");
   }
 
   if (!placeToggle()) {
-    // Expanded menu likely isn't built yet — wait for it to appear.
     const obs = new MutationObserver(() => {
       if (placeToggle()) obs.disconnect();
     });
     obs.observe(musicPlayerUI, { childList: true, subtree: true });
   }
 
-  // Track which BrowsingContext is being mirrored, so a click can focus
-  // the originating tab in the chrome window.
+  // BrowsingContext bookkeeping for click-to-focus origin tab.
   let sourceBC = null;
-  let lastPipOpenAt = 0; // performance.now() of most recent open
-  const PIP_OPEN_DEBOUNCE_MS = 1500;
+  let lastPipOpenAt = 0;
 
   function getActiveActor() {
     if (!sourceBC) return null;
-    try {
-      return sourceBC.currentWindowGlobal?.getActor("ZenSidebarPiP") || null;
-    } catch (e) {
-      return null;
-    }
-  }
-  function yieldAppFocus() {
-    try {
-      Cc["@mozilla.org/widget/macdocksupport;1"].getService(Ci.nsIMacDockSupport).activateApplication(false);
-    } catch (e) {}
+    return safe(() => sourceBC.currentWindowGlobal?.getActor("ZenSidebarPiP")) || null;
   }
 
-  // Catch the next PiP window that opens (regardless of who triggered it).
+  // Catch the next PiP window that opens so we can clean up the observer
+  // once it's served its purpose.
   function awaitNextPipWindow() {
     let timeoutId = null;
+    const unregister = () => safe(() => Services.ww.unregisterNotification(observer));
     const observer = {
       observe(subject, topic) {
         if (topic !== "domwindowopened") return;
-        const win = subject;
-        win.addEventListener(
-          "load",
-          () => {
-            const wt = win.document?.documentElement?.getAttribute("windowtype");
-            if (wt !== "Toolkit:PictureInPicture") return;
-            try {
-              Services.ww.unregisterNotification(observer);
-            } catch (e) {}
-            if (timeoutId) clearTimeout(timeoutId);
-          },
-          { once: true },
-        );
+        subject.addEventListener("load", () => {
+          const wt = subject.document?.documentElement?.getAttribute("windowtype");
+          if (wt !== "Toolkit:PictureInPicture") return;
+          unregister();
+          if (timeoutId) clearTimeout(timeoutId);
+        }, { once: true });
       },
     };
     Services.ww.registerNotification(observer);
-    timeoutId = setTimeout(() => {
-      try {
-        Services.ww.unregisterNotification(observer);
-      } catch (e) {}
-    }, 3000);
+    timeoutId = setTimeout(unregister, CONFIG.PIP_OBSERVE_TIMEOUT_MS);
   }
 
-  // `activate` / `deactivate` fire only on OS-level focus changes of the
-  // whole browser window.
   window.addEventListener("deactivate", () => {
     if (!isStreaming) return;
-    // yieldAppFocus() itself causes another `deactivate` shortly after we
-    // open — debounce so we don't open a second PiP for the echo event.
-    if (performance.now() - lastPipOpenAt < PIP_OPEN_DEBOUNCE_MS) return;
-    const actor = getActiveActor();
-    if (!actor) return;
+    if (performance.now() - lastPipOpenAt < CONFIG.PIP_OPEN_DEBOUNCE_MS) return;
+    if (!getActiveActor()) return;
     awaitNextPipWindow();
     lastPipOpenAt = performance.now();
   });
 
-  pipContainer.addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (!sourceBC) return;
-    try {
-      const browserEl = sourceBC.top.embedderElement;
-      if (!browserEl) return;
-      const gb = window.gBrowser;
-      if (!gb) return;
-      const tab = gb.getTabForBrowser(browserEl);
-      if (tab) gb.selectedTab = tab;
-    } catch (err) {
-      console.warn("[ZenPiP] focus source tab failed:", err);
-    }
-  });
-
-  // 3. Define the UI Toggle Logic
+  // Public controller surface invoked by the parent JSWindowActor.
   window.ZenPiPController = {
-    showVideo: function (stream, browsingContext) {
-      // Swap cleanly if a previous stream is still attached.
+    showVideo(stream, browsingContext) {
       if (videoEl.srcObject && videoEl.srcObject !== stream) {
-        try {
-          videoEl.pause();
-        } catch (e) {}
+        safe(() => videoEl.pause());
       }
       videoEl.srcObject = stream;
       sourceBC = browsingContext || null;
 
-      // Cancel a pending animate-out so a quick unmute reuses the same node.
       if (animateOutTimer) {
         clearTimeout(animateOutTimer);
         animateOutTimer = null;
@@ -419,37 +368,35 @@ console.log("[ZenPiP] main.uc.js TOP-LEVEL executed");
       startTracking();
 
       if (wasStreaming) {
-        // Already on screen — just swap the stream, no entrance animation.
-        pipContainer.style.opacity = userHidden ? "0" : "1";
-        pipContainer.style.visibility = userHidden ? "hidden" : "visible";
-        pipContainer.style.transform = "";
+        const s = pipContainer.style;
+        s.opacity = userHidden ? "0" : "1";
+        s.visibility = userHidden ? "hidden" : "visible";
+        s.transform = "";
         return;
       }
 
-      pipContainer.style.display = "block";
-      pipContainer.style.visibility = userHidden ? "hidden" : "visible";
+      const s = pipContainer.style;
+      s.display = "block";
+      s.visibility = userHidden ? "hidden" : "visible";
 
-      // Set entrance start state without a transition so it doesn't animate
-      // from whatever the previous opacity/transform was.
       animating = true;
-      pipContainer.style.transition = "none";
-      pipContainer.style.opacity = "0";
-      pipContainer.style.transform = "scale(0.9) translateY(8px)";
-      // Force a reflow so the transition picks up the start state.
+      s.transition = "none";
+      s.opacity = "0";
+      s.transform = "scale(0.9) translateY(8px)";
       void pipContainer.getBoundingClientRect();
-      pipContainer.style.transition = ANIM_TRANSITION;
+      s.transition = ANIM_TRANSITION;
 
       requestAnimationFrame(() => {
-        pipContainer.style.opacity = userHidden ? "0" : "1";
-        pipContainer.style.transform = "scale(1) translateY(0)";
+        s.opacity = userHidden ? "0" : "1";
+        s.transform = "scale(1) translateY(0)";
       });
       setTimeout(() => {
         animating = false;
-        // Hand opacity control back to syncPosition.
-        lastOpacityStr = "";
-      }, ANIM_MS + 30);
+        lastOpacity = NaN;
+      }, CONFIG.ANIM_MS + 30);
     },
-    hideVideo: function () {
+
+    hideVideo() {
       if (!isStreaming && !animating) return;
       if (animateOutTimer) {
         clearTimeout(animateOutTimer);
@@ -457,53 +404,44 @@ console.log("[ZenPiP] main.uc.js TOP-LEVEL executed");
       }
 
       animating = true;
-      pipContainer.style.transition = ANIM_TRANSITION;
-      pipContainer.style.opacity = "0";
-      pipContainer.style.transform = "scale(0.9) translateY(8px)";
+      const s = pipContainer.style;
+      s.transition = ANIM_TRANSITION;
+      s.opacity = "0";
+      s.transform = "scale(0.9) translateY(8px)";
 
       animateOutTimer = setTimeout(() => {
         animateOutTimer = null;
         animating = false;
-        try {
-          videoEl.pause();
-        } catch (e) {}
+        safe(() => videoEl.pause());
         videoEl.srcObject = null;
         videoEl.removeAttribute("src");
-        try {
-          videoEl.load();
-        } catch (e) {}
+        safe(() => videoEl.load());
         sourceBC = null;
-        pipContainer.style.display = "none";
-        pipContainer.style.transition = "none";
-        pipContainer.style.transform = "";
+        s.display = "none";
+        s.transition = "none";
+        s.transform = "";
         isStreaming = false;
         stopTracking();
-        lastOpacityStr = "";
+        lastOpacity = NaN;
         lastVisible = null;
-      }, ANIM_MS + 10);
+      }, CONFIG.ANIM_MS + 10);
     },
   };
 
-  // 4. Register the JSWindowActor to bridge the E10s process gap.
-  // Map a resource:// URI to this mod's directory so the actor modules
-  // (which must be loaded by URI, not inline) are reachable.
+  // Register the JSWindowActor that bridges the e10s process gap.
   try {
-    const { Services } = globalThis;
     const profileDir = Services.dirsvc.get("ProfD", Ci.nsIFile);
     const modDir = profileDir.clone();
-    for (const seg of ["chrome", "sine-mods", "PIP Customizations"]) {
-      modDir.append(seg);
-    }
+    for (const seg of ["chrome", "sine-mods", "PIP Customizations"]) modDir.append(seg);
     const modUri = Services.io.newFileURI(modDir);
     const resProto = Services.io.getProtocolHandler("resource").QueryInterface(Ci.nsIResProtocolHandler);
     if (!resProto.hasSubstitution("zen-sidebar-pip")) {
       resProto.setSubstitution("zen-sidebar-pip", modUri);
     }
-    console.log("[ZenPiP] resource mapped to:", modUri.spec, "exists:", modDir.exists());
+    log("resource mapped to:", modUri.spec, "exists:", modDir.exists());
+
     ChromeUtils.registerWindowActor("ZenSidebarPiP", {
-      parent: {
-        esModuleURI: "resource://zen-sidebar-pip/parent-actor.js",
-      },
+      parent: { esModuleURI: "resource://zen-sidebar-pip/parent-actor.js" },
       child: {
         esModuleURI: "resource://zen-sidebar-pip/content-actor.js",
         events: {
@@ -516,10 +454,8 @@ console.log("[ZenPiP] main.uc.js TOP-LEVEL executed");
       allFrames: true,
     });
   } catch (e) {
-    if (e.name !== "NotSupportedError") {
-      console.error("Failed to register JSWindowActor:", e);
-    }
+    if (e.name !== "NotSupportedError") err("Failed to register JSWindowActor:", e);
   }
 
-  console.log("Zen Sidebar PiP initialized.");
+  log("Zen Sidebar PiP initialized.");
 })();
