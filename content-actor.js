@@ -11,6 +11,7 @@
 //    will otherwise pin a core.
 
 const MAX_BITRATE_BPS = 8_000_000; // ~8 Mbps — vertical sources are pixel-dense
+const MIN_BITRATE_BPS = 2_500_000; // floor so the encoder doesn't crawl up from ~300kbps
 const MAX_FRAMERATE = 60;
 
 export class ZenSidebarPiPChild extends JSWindowActorChild {
@@ -127,12 +128,21 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
       if (!params.encodings || params.encodings.length === 0) {
         params.encodings = [{}];
       }
-      params.encodings[0].maxBitrate = MAX_BITRATE_BPS;
-      params.encodings[0].maxFramerate = MAX_FRAMERATE;
-      params.encodings[0].scaleResolutionDownBy = 1;
-      // Prefer resolution over framerate — this is a preview tile, sharpness
-      // matters more than buttery motion, especially for vertical sources.
-      params.degradationPreference = "maintain-resolution";
+      const enc = params.encodings[0];
+      enc.maxBitrate = MAX_BITRATE_BPS;
+      // minBitrate stops the encoder's slow-start from holding the framerate
+      // down for the first few seconds. This is a same-process loopback, so
+      // bandwidth estimation has nothing to discover.
+      enc.minBitrate = MIN_BITRATE_BPS;
+      enc.maxFramerate = MAX_FRAMERATE;
+      enc.scaleResolutionDownBy = 1;
+      // High priority on the wire and to the OS scheduler so the encoder
+      // ramps without waiting on BWE probing.
+      enc.priority = "high";
+      enc.networkPriority = "high";
+      // Prefer framerate stability — dropping the odd pixel is fine,
+      // dropping frames is what the user actually notices on a preview tile.
+      params.degradationPreference = "maintain-framerate";
       await sender.setParameters(params);
     } catch (e) {}
   }
