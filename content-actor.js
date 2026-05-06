@@ -143,9 +143,10 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     const safeParams = {
       ...baseParams,
       encodings: [safeEnc],
-      // Balanced — let the encoder trade off resolution and framerate together
-      // under bitrate pressure instead of sacrificing either one wholesale.
-      degradationPreference: "balanced",
+      // Preserve resolution under pressure — this is a preview tile, sharpness
+      // matters more than buttery motion, and ramp-up is handled separately
+      // by the receiver-side jitter buffer hints.
+      degradationPreference: "maintain-resolution",
     };
 
     // Optional / less-portable hints. If Firefox accepts them, great.
