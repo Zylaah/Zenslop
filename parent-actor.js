@@ -23,6 +23,15 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
           const stream = e.streams[0] || new win.MediaStream([e.track]);
           // If the remote track ends (tab closed, capture stopped), hide.
           e.track.addEventListener("ended", () => this._handleStop());
+          // Force the receiver to render frames as soon as they arrive.
+          // Without these hints the jitter buffer adapts upward over the
+          // first few seconds, which presents as "fps ramping up".
+          try {
+            if (e.receiver) {
+              e.receiver.playoutDelayHint = 0;
+              e.receiver.jitterBufferTarget = 0;
+            }
+          } catch (_) {}
           if (win.ZenPiPController) {
             win.ZenPiPController.showVideo(stream, this.browsingContext);
           }
