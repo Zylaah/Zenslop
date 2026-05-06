@@ -380,20 +380,28 @@
       s.visibility = userHidden ? "hidden" : "visible";
 
       animating = true;
+      // Commit the start state with NO transition. Forcing layout via
+      // getBoundingClientRect alone isn't enough — the browser may coalesce
+      // a same-task `transition: none` -> `transition: ANIM_TRANSITION` swap,
+      // and the opacity:0 start is never observed under no-transition. Using
+      // a double rAF ensures the start frame is painted before we re-enable
+      // the transition and target the end state.
       s.transition = "none";
       s.opacity = "0";
       s.transform = "scale(0.9) translateY(8px)";
       void pipContainer.getBoundingClientRect();
-      s.transition = ANIM_TRANSITION;
 
       requestAnimationFrame(() => {
-        s.opacity = userHidden ? "0" : "1";
-        s.transform = "scale(1) translateY(0)";
+        s.transition = ANIM_TRANSITION;
+        requestAnimationFrame(() => {
+          s.opacity = userHidden ? "0" : "1";
+          s.transform = "scale(1) translateY(0)";
+        });
       });
       setTimeout(() => {
         animating = false;
         lastOpacity = NaN;
-      }, CONFIG.ANIM_MS + 30);
+      }, CONFIG.ANIM_MS + 60);
     },
 
     hideVideo() {
@@ -405,9 +413,21 @@
 
       animating = true;
       const s = pipContainer.style;
-      s.transition = ANIM_TRANSITION;
-      s.opacity = "0";
-      s.transform = "scale(0.9) translateY(8px)";
+      // Pin the current visual state explicitly under no-transition, then
+      // flip transitions on in a rAF so the change to opacity:0 actually
+      // animates from a known starting point.
+      s.transition = "none";
+      s.opacity = userHidden ? "0" : "1";
+      s.transform = "scale(1) translateY(0)";
+      void pipContainer.getBoundingClientRect();
+
+      requestAnimationFrame(() => {
+        s.transition = ANIM_TRANSITION;
+        requestAnimationFrame(() => {
+          s.opacity = "0";
+          s.transform = "scale(0.9) translateY(8px)";
+        });
+      });
 
       animateOutTimer = setTimeout(() => {
         animateOutTimer = null;
@@ -424,7 +444,7 @@
         stopTracking();
         lastOpacity = NaN;
         lastVisible = null;
-      }, CONFIG.ANIM_MS + 10);
+      }, CONFIG.ANIM_MS + 60);
     },
   };
 
