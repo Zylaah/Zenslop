@@ -79,7 +79,7 @@ The connection is tuned for "this is loopback, stop pretending it's the open int
 
 <!-- TOGGLE SCREENSHOT — close-up of the media controls with the eye-toggle button highlighted -->
 <p align="center">
-  <img src="docs/toggle-button.png" alt="Eye-toggle button injected into the sidebar media controls" width="420">
+  <img src="docs/toggle-button.png" alt="Eye-toggle button injected into the sidebar media controls" width="300">
 </p>
 
 ---
@@ -148,7 +148,7 @@ Confirm your Firefox build supports `RTCRtpReceiver.jitterBufferTarget` and `pla
 
 The MIT License (MIT)
 
-Copyright (c) 2026 Rishit Sharma
+Copyright (c) 2026 Rishu Sharma
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
