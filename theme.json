@@ -1,13 +1,13 @@
 {
-  "id": "PIP Customizations",
+  "id": "Zenslop",
   "name": "Zenslop",
-  "description": "Replaces the Zen music controller with a live video stream of the active tab.",
-  "author": "YourName",
-  "version": "0.1.0",
+  "description": "Adds a live video preview of a currently playing video above the existing media controls in Zen Browser",
+  "author": "Rishu Sharma",
+  "version": "1.0.0",
   "scripts": {
     "main.uc.js": {
       "name": "Zenslop",
-      "description": "Sidebar UI hijack and JSWindowActor registration",
+      "description": "Sidebar UI hook and JSWindowActor registration",
       "include": ["chrome://browser/content/browser.xhtml"]
     }
   },
