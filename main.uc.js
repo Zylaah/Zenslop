@@ -452,7 +452,7 @@
   try {
     const profileDir = Services.dirsvc.get("ProfD", Ci.nsIFile);
     const modDir = profileDir.clone();
-    for (const seg of ["chrome", "sine-mods", "PIP Customizations"]) modDir.append(seg);
+    for (const seg of ["chrome", "sine-mods", "Zenslop"]) modDir.append(seg);
     const modUri = Services.io.newFileURI(modDir);
     const resProto = Services.io.getProtocolHandler("resource").QueryInterface(Ci.nsIResProtocolHandler);
     if (!resProto.hasSubstitution("zen-sidebar-pip")) {
