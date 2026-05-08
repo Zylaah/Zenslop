@@ -123,28 +123,50 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
   }
 
   async _capSenderEncoding(sender) {
+    // Firefox rejects setParameters() outright if it sees an unknown field on
+    // the encoding object — and that rejection silently dropped ALL our caps,
+    // including maxBitrate, leaving the encoder at its ~300 kbps default with
+    // aggressive resolution downscaling. Try the rich config first, then fall
+    // back to the well-supported subset if Firefox refuses it.
+    const baseParams = sender.getParameters();
+    if (!baseParams.encodings || baseParams.encodings.length === 0) {
+      baseParams.encodings = [{}];
+    }
+    const baseEnc = baseParams.encodings[0];
+
+    const safeEnc = {
+      ...baseEnc,
+      maxBitrate: MAX_BITRATE_BPS,
+      maxFramerate: MAX_FRAMERATE,
+      scaleResolutionDownBy: 1,
+    };
+    const safeParams = {
+      ...baseParams,
+      encodings: [safeEnc],
+      // Preserve resolution under pressure — this is a preview tile, sharpness
+      // matters more than buttery motion, and ramp-up is handled separately
+      // by the receiver-side jitter buffer hints.
+      degradationPreference: "maintain-resolution",
+    };
+
+    // Optional / less-portable hints. If Firefox accepts them, great.
+    const richEnc = {
+      ...safeEnc,
+      minBitrate: MIN_BITRATE_BPS,
+      priority: "high",
+      networkPriority: "high",
+    };
+    const richParams = { ...safeParams, encodings: [richEnc] };
+
     try {
-      const params = sender.getParameters();
-      if (!params.encodings || params.encodings.length === 0) {
-        params.encodings = [{}];
-      }
-      const enc = params.encodings[0];
-      enc.maxBitrate = MAX_BITRATE_BPS;
-      // minBitrate stops the encoder's slow-start from holding the framerate
-      // down for the first few seconds. This is a same-process loopback, so
-      // bandwidth estimation has nothing to discover.
-      enc.minBitrate = MIN_BITRATE_BPS;
-      enc.maxFramerate = MAX_FRAMERATE;
-      enc.scaleResolutionDownBy = 1;
-      // High priority on the wire and to the OS scheduler so the encoder
-      // ramps without waiting on BWE probing.
-      enc.priority = "high";
-      enc.networkPriority = "high";
-      // Prefer framerate stability — dropping the odd pixel is fine,
-      // dropping frames is what the user actually notices on a preview tile.
-      params.degradationPreference = "maintain-framerate";
-      await sender.setParameters(params);
-    } catch (e) {}
+      await sender.setParameters(richParams);
+      return;
+    } catch (_) {}
+    try {
+      await sender.setParameters(safeParams);
+    } catch (e) {
+      console.warn("[Zenslop] setParameters failed:", e);
+    }
   }
 
   _stopAndNotify() {
