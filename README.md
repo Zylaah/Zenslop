@@ -117,7 +117,7 @@ const MAX_FRAMERATE = 60;
 
 - Built against **Zen Browser** (Firefox-based, ESR rapid channel).
 - Uses `JSWindowActor`, `RTCPeerConnection`, `HTMLMediaElement.captureStream()`, `RTCRtpReceiver.playoutDelayHint`, `RTCRtpReceiver.jitterBufferTarget`. Older Firefox builds will silently ignore the receiver hints and the encoder `minBitrate`.
-- macOS-tested. Nothing platform-specific should remain.
+- Tested with YT and YTM on MacOS, but there shouldn't be anything OS specific
 
 ---
 
@@ -129,7 +129,7 @@ const MAX_FRAMERATE = 60;
 Open the Browser Toolbox (`Cmd+Opt+Shift+I` on macOS) and check the chrome-process console for `[ZenPiP]` log lines.
 
 - `Could not find the music player UI.` — Zen has changed the selector for the media controls toolbar. Update `MUSIC_PLAYER_SELECTORS` in `main.uc.js`.
-- `Failed to register JSWindowActor` — the `resource://` substitution didn't resolve. Check that the mod folder is exactly named `PIP Customizations` inside `chrome/sine-mods`.
+- `Failed to register JSWindowActor` — the `resource://` substitution didn't resolve. Check that the mod folder is exactly named `Zenslop` inside `chrome/sine-mods`.
 </details>
 
 <details>
@@ -162,5 +162,5 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ## Credits
 
-- Built on top of [Zen Browser](https://zen-browser.app/)'s sidebar architecture.
-- Loaded via [Sine](https://github.com/CosmoCreeper/Sine).
+- [Zen Browser](https://zen-browser.app/).
+- [Sine](https://github.com/CosmoCreeper/Sine).
