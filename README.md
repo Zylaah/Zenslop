@@ -43,6 +43,8 @@ This mod hooks into the existing media playback controls and surfaces the video 
   <img src="docs/kawaiislop.png" alt="Picture of Zenslop" height="640">
 </p>
 
+### Contact me if you want to add your fork here
+
 ---
 
 ## The Technical Stuff
