@@ -7,6 +7,10 @@
 
 export class ZenSidebarPiPParent extends JSWindowActorParent {
   async receiveMessage(msg) {
+    if (msg.name === "ZenPiP:Debug") {
+      console.log(...(msg.data?.args || []));
+      return;
+    }
     console.log("[Zenslop/parent]", msg.name);
     const win = this.browsingContext.topChromeWindow;
     if (!win) return;
@@ -21,6 +25,7 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
         this._win = win;
 
         pc.ontrack = (e) => {
+          console.log("[Zenslop/parent] ontrack kind=", e.track.kind, "readyState=", e.track.readyState, "muted=", e.track.muted);
           const stream = e.streams[0] || new win.MediaStream([e.track]);
           // If the remote track ends (tab closed, capture stopped), hide.
           e.track.addEventListener("ended", () => this._handleStop());
@@ -34,7 +39,10 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
             }
           } catch (_) {}
           if (win.ZenPiPController) {
+            console.log("[Zenslop/parent] calling showVideo, tracks=", stream.getVideoTracks().length);
             win.ZenPiPController.showVideo(stream, this.browsingContext);
+          } else {
+            console.log("[Zenslop/parent] ZenPiPController missing on win");
           }
         };
 

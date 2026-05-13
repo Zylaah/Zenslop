@@ -15,9 +15,18 @@ const MIN_BITRATE_BPS = 2_500_000; // floor so the encoder doesn't crawl up from
 const MAX_FRAMERATE = 60;
 
 export class ZenSidebarPiPChild extends JSWindowActorChild {
+  _debug(...args) {
+    try {
+      this.sendAsyncMessage("ZenPiP:Debug", { args: args.map(a => {
+        try { return typeof a === "object" ? JSON.stringify(a) : String(a); }
+        catch (_) { return String(a); }
+      }) });
+    } catch (_) {}
+  }
+
   async handleEvent(event) {
     const target = event.target;
-    console.log("[Zenslop/content]", event.type, target?.tagName, "muted=", target?.muted, "vw=", target?.videoWidth);
+    this._debug("[Zenslop/content]", event.type, target?.tagName, "muted=", target?.muted, "vw=", target?.videoWidth);
     if (!target || target.tagName !== "VIDEO") return;
 
     if (event.type === "playing") {
@@ -34,14 +43,14 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
           await this._tryStart(target);
         }
       } else if (target === this._video) {
-        this._stopAndNotify();
+        this._stopAndNotify("volumechange:muted");
       }
       return;
     }
 
     if (event.type === "pause" || event.type === "ended" || event.type === "emptied") {
       if (target !== this._video) return;
-      this._stopAndNotify();
+      this._stopAndNotify("event:" + event.type);
     }
   }
 
@@ -50,7 +59,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
   }
 
   async _tryStart(target) {
-    console.log("[Zenslop/content] tryStart readyState=", target.readyState, "vw=", target.videoWidth, "audible=", this._isAudible(target), "pcExists=", !!this._pc);
+    this._debug("[Zenslop/content] tryStart readyState=", target.readyState, "vw=", target.videoWidth, "audible=", this._isAudible(target), "pcExists=", !!this._pc);
     if (this._pc) return; // already mirroring something
     if (target.readyState < 2 || target.videoWidth === 0) return;
     if (!this._isAudible(target)) return;
@@ -63,10 +72,10 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
         stream = target.mozCaptureStream();
       }
     } catch (e) {
-      console.log("[Zenslop/content] captureStream threw:", e?.name, e?.message);
+      this._debug("[Zenslop/content] captureStream threw:", e?.name, e?.message);
       return;
     }
-    console.log("[Zenslop/content] stream tracks=", stream?.getVideoTracks?.().length);
+    this._debug("[Zenslop/content] stream tracks=", stream?.getVideoTracks?.().length);
     if (!stream || stream.getVideoTracks().length === 0) return;
 
     this._stream = stream;
@@ -77,14 +86,14 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
 
   _attachVideoListeners(video) {
     // Catch end-of-stream and src changes that don't always fire pause first.
-    const onEnd = () => this._stopAndNotify();
+    const onEnd = (e) => this._stopAndNotify("listener:" + e.type);
     video.addEventListener("ended", onEnd, { once: true });
     video.addEventListener("emptied", onEnd, { once: true });
     this._videoListeners = { onEnd };
 
     // Page navigation kills the capture without a clean event; pre-empt it.
     if (!this._pageHideBound) {
-      this._pageHideBound = () => this._stopAndNotify();
+      this._pageHideBound = () => this._stopAndNotify("pagehide");
       this.contentWindow.addEventListener("pagehide", this._pageHideBound, {
         once: true,
       });
@@ -100,7 +109,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
       const sender = pc.addTrack(track, stream);
       // Track lifecycle: if the underlying source dies, tear down promptly.
       track.addEventListener("ended", () => {
-        if (this._video && track.kind === "video") this._stopAndNotify();
+        if (this._video && track.kind === "video") this._stopAndNotify("track:ended:" + track.kind);
       });
       if (track.kind === "video") this._capSenderEncoding(sender);
     }
@@ -115,7 +124,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     pc.oniceconnectionstatechange = () => {
       const s = pc.iceConnectionState;
       if (s === "failed" || s === "disconnected" || s === "closed") {
-        this._stopAndNotify();
+        this._stopAndNotify("ice:" + s);
       }
     };
 
@@ -173,11 +182,12 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     }
   }
 
-  _stopAndNotify() {
+  _stopAndNotify(reason) {
+    this._debug("[Zenslop/content] stopAndNotify reason=", reason, "hadPc=", !!this._pc, "hadVideo=", !!this._video);
     if (!this._pc && !this._video) return;
     this._teardown();
     try {
-      this.sendAsyncMessage("ZenPiP:VideoStopped", {});
+      this.sendAsyncMessage("ZenPiP:VideoStopped", { reason });
     } catch (e) {}
   }
 
