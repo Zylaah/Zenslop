@@ -12,5 +12,6 @@
     }
   },
   "tags": ["Javascript"],
-  "fork": ["zen"]
+  "fork": ["zen"],
+  "ai": "yes"
 }
