@@ -1,87 +1,48 @@
-// Chrome-process side. Receives the WebRTC offer from the content actor and
-// hands the resulting MediaStream to the chrome window's ZenPiPController.
+// Chrome-process side. Receives encoded video chunks from the content actor,
+// decodes them with WebCodecs, and paints the decoded VideoFrames directly
+// onto the sidebar canvas via ZenPiPController.drawFrame().
 //
-// Reliability: any signal that the source is gone (ICE failure, track end,
-// explicit child stop, actor destroy) routes through _handleStop so the UI
-// hides immediately instead of leaving a frozen frame.
+// MediaStreamTrackGenerator isn't available in the chrome window in modern
+// Firefox, so we render to a canvas instead of synthesizing a MediaStream.
+//
+// Frame extraction is driven by a chrome-process setInterval that ticks the
+// content actor at TICK_INTERVAL_MS — rVFC on the content side is throttled
+// to zero in background tabs, which would otherwise stall the mirror whenever
+// the user navigates away from the source tab.
+
+const TICK_INTERVAL_MS = 33; // ~30 fps
 
 export class ZenSidebarPiPParent extends JSWindowActorParent {
   async receiveMessage(msg) {
+    // Dump everything for diagnosis.
+    const argsArr = Array.isArray(msg.data?.args) ? msg.data.args : null;
+    if (argsArr) {
+      console.log("[Zenslop/parent RX]", msg.name, JSON.stringify(argsArr));
+    } else {
+      console.log("[Zenslop/parent RX]", msg.name, JSON.stringify(msg.data));
+    }
+
     if (msg.name === "ZenPiP:Debug") {
-      console.log(...(msg.data?.args || []));
+      if (argsArr && argsArr.length > 0) console.log(...argsArr);
       return;
     }
     console.log("[Zenslop/parent]", msg.name);
+
     const win = this.browsingContext.topChromeWindow;
     if (!win) return;
 
     switch (msg.name) {
-      case "ZenPiP:Offer": {
-        // Renegotiation from the same actor: drop the old PC before answering.
-        if (this._pc) this._closePc();
-
-        const pc = new win.RTCPeerConnection();
-        this._pc = pc;
-        this._win = win;
-
-        pc.ontrack = (e) => {
-          console.log("[Zenslop/parent] ontrack kind=", e.track.kind, "readyState=", e.track.readyState, "muted=", e.track.muted);
-          const stream = e.streams[0] || new win.MediaStream([e.track]);
-          // If the remote track ends (tab closed, capture stopped), hide.
-          e.track.addEventListener("ended", () => this._handleStop());
-          // Force the receiver to render frames as soon as they arrive.
-          // Without these hints the jitter buffer adapts upward over the
-          // first few seconds, which presents as "fps ramping up".
-          try {
-            if (e.receiver) {
-              e.receiver.playoutDelayHint = 0;
-              e.receiver.jitterBufferTarget = 0;
-            }
-          } catch (_) {}
-          if (win.ZenPiPController) {
-            console.log("[Zenslop/parent] calling showVideo, tracks=", stream.getVideoTracks().length);
-            win.ZenPiPController.showVideo(stream, this.browsingContext);
-          } else {
-            console.log("[Zenslop/parent] ZenPiPController missing on win");
-          }
-        };
-
-        pc.onicecandidate = (e) => {
-          if (!e.candidate) return;
-          this.sendAsyncMessage("ZenPiP:IceParent", {
-            candidate: e.candidate.toJSON(),
-          });
-        };
-
-        pc.oniceconnectionstatechange = () => {
-          const s = pc.iceConnectionState;
-          if (s === "failed" || s === "disconnected" || s === "closed") {
-            this._handleStop();
-          }
-        };
-
+      case "ZenPiP:Frame": {
+        if (!this._tickInterval) this._startTicking(win);
+        console.log("[Zenslop/parent] about to call _handleFrame, decoder=", !!this._decoder, "dataType=", typeof msg.data?.data, "dataIsAB=", msg.data?.data instanceof ArrayBuffer, "dataLen=", msg.data?.data?.byteLength);
         try {
-          await pc.setRemoteDescription(new win.RTCSessionDescription(msg.data.offer));
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          this.sendAsyncMessage("ZenPiP:Answer", {
-            answer: { type: answer.type, sdp: answer.sdp },
-          });
+          await this._handleFrame(win, msg.data);
         } catch (e) {
-          this._handleStop();
+          console.log("[Zenslop/parent] _handleFrame threw:", e?.name, e?.message || e, e?.stack);
         }
+        console.log("[Zenslop/parent] _handleFrame returned");
         break;
       }
-
-      case "ZenPiP:IceChild": {
-        if (this._pc && msg.data.candidate) {
-          try {
-            await this._pc.addIceCandidate(new win.RTCIceCandidate(msg.data.candidate));
-          } catch (e) {}
-        }
-        break;
-      }
-
       case "ZenPiP:VideoStopped": {
         this._handleStop();
         break;
@@ -89,21 +50,128 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
     }
   }
 
-  _handleStop() {
-    this._closePc();
-    const win = this._win;
-    if (win && win.ZenPiPController) {
-      win.ZenPiPController.hideVideo();
+  _startTicking(win) {
+    this._stopTicking();
+    console.log("[Zenslop/parent] starting tick interval");
+    this._timerWindow = win;
+    this._tickInterval = win.setInterval(() => {
+      try {
+        this.sendAsyncMessage("ZenPiP:Tick", {});
+      } catch (_) {}
+    }, TICK_INTERVAL_MS);
+  }
+
+  _stopTicking() {
+    if (this._tickInterval) {
+      const win = this._timerWindow || this.browsingContext?.topChromeWindow;
+      try {
+        win?.clearInterval(this._tickInterval);
+      } catch (_) {}
+      this._tickInterval = null;
+      this._timerWindow = null;
     }
   }
 
-  _closePc() {
-    if (this._pc) {
-      try {
-        this._pc.close();
-      } catch (e) {}
-      this._pc = null;
+  async _handleFrame(win, payload) {
+    const dataByteLen = payload.data?.byteLength ?? -1;
+    if (!this._decoder) {
+      console.log("[Zenslop/parent] handleFrame first chunk, dataBytes=", dataByteLen, "type=", payload.type, "hasConfig=", !!payload.config);
+      if (!payload.config) return;
+      const ok = this._setupDecoder(win, payload.config);
+      if (!ok) return;
     }
+
+    let chunk;
+    try {
+      chunk = new win.EncodedVideoChunk({
+        type: payload.type,
+        timestamp: payload.timestamp,
+        duration: payload.duration,
+        data: payload.data,
+      });
+    } catch (e) {
+      console.log("[Zenslop/parent] EncodedVideoChunk threw:", e?.message || e);
+      return;
+    }
+
+    try {
+      this._decoder.decode(chunk);
+    } catch (e) {
+      console.log("[Zenslop/parent] decode threw:", e?.message || e);
+    }
+  }
+
+  _setupDecoder(win, config) {
+    if (typeof win.VideoDecoder !== "function") {
+      console.log("[Zenslop/parent] VideoDecoder unavailable in chrome window");
+      return false;
+    }
+    if (!win.ZenPiPController) {
+      console.log("[Zenslop/parent] ZenPiPController missing on win");
+      return false;
+    }
+
+    let decodedCount = 0;
+    let decoder;
+    try {
+      decoder = new win.VideoDecoder({
+        output: (frame) => {
+          decodedCount++;
+          if (decodedCount <= 3 || decodedCount % 120 === 0) {
+            console.log("[Zenslop/parent] decoded frame", decodedCount, "ts=", frame.timestamp);
+          }
+          try {
+            win.ZenPiPController.drawFrame(frame);
+          } catch (e) {
+            console.log("[Zenslop/parent] drawFrame threw:", e?.message || e);
+          }
+          try { frame.close(); } catch (_) {}
+        },
+        error: (e) => {
+          console.log("[Zenslop/parent] decoder error:", e?.message || e);
+          this._handleStop();
+        },
+      });
+    } catch (e) {
+      console.log("[Zenslop/parent] VideoDecoder ctor threw:", e?.name, e?.message || e);
+      return false;
+    }
+
+    try {
+      const cfg = {
+        codec: config.codec,
+        codedWidth: config.codedWidth,
+        codedHeight: config.codedHeight,
+      };
+      if (config.description) cfg.description = config.description;
+      decoder.configure(cfg);
+    } catch (e) {
+      console.log("[Zenslop/parent] decoder.configure threw:", e?.message || e);
+      return false;
+    }
+    this._decoder = decoder;
+    console.log("[Zenslop/parent] decoder configured", config.codedWidth, "x", config.codedHeight);
+
+    try {
+      win.ZenPiPController.showVideo(config.codedWidth, config.codedHeight, this.browsingContext);
+    } catch (e) {
+      console.log("[Zenslop/parent] showVideo threw:", e?.name, e?.message || e);
+    }
+    this._win = win;
+    return true;
+  }
+
+  _handleStop() {
+    this._stopTicking();
+    if (this._decoder) {
+      try { this._decoder.close(); } catch (_) {}
+      this._decoder = null;
+    }
+    const win = this._win || this.browsingContext?.topChromeWindow;
+    if (win && win.ZenPiPController) {
+      win.ZenPiPController.hideVideo();
+    }
+    this._win = null;
   }
 
   didDestroy() {
