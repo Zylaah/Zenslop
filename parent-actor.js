@@ -7,6 +7,7 @@
 
 export class ZenSidebarPiPParent extends JSWindowActorParent {
   async receiveMessage(msg) {
+    console.log("[Zenslop/parent]", msg.name);
     const win = this.browsingContext.topChromeWindow;
     if (!win) return;
 

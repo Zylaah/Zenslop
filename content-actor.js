@@ -17,6 +17,7 @@ const MAX_FRAMERATE = 60;
 export class ZenSidebarPiPChild extends JSWindowActorChild {
   async handleEvent(event) {
     const target = event.target;
+    console.log("[Zenslop/content]", event.type, target?.tagName, "muted=", target?.muted, "vw=", target?.videoWidth);
     if (!target || target.tagName !== "VIDEO") return;
 
     if (event.type === "playing") {
@@ -49,6 +50,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
   }
 
   async _tryStart(target) {
+    console.log("[Zenslop/content] tryStart readyState=", target.readyState, "vw=", target.videoWidth, "audible=", this._isAudible(target), "pcExists=", !!this._pc);
     if (this._pc) return; // already mirroring something
     if (target.readyState < 2 || target.videoWidth === 0) return;
     if (!this._isAudible(target)) return;
@@ -61,8 +63,10 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
         stream = target.mozCaptureStream();
       }
     } catch (e) {
+      console.log("[Zenslop/content] captureStream threw:", e?.name, e?.message);
       return;
     }
+    console.log("[Zenslop/content] stream tracks=", stream?.getVideoTracks?.().length);
     if (!stream || stream.getVideoTracks().length === 0) return;
 
     this._stream = stream;
