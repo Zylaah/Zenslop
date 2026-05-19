@@ -357,8 +357,13 @@
     if (existing && existing.parentNode) {
       const parent = existing.parentNode;
       const btn = buildToggle(existing);
-      parent.insertBefore(btn, existing);
-      parkNativePipButton(existing);
+      const parent = existing.parentNode;
+      parent.insertBefore(btn, existing.nextSibling);
+      // The parent container may be sized only for visible controls (e.g. when
+      // the native PiP button is hidden). Ensure it always expands to fit all
+      // children, including our injected button.
+      parent.style.minWidth = "fit-content";
+      parent.style.overflow = "visible";
       return true;
     }
     return false;
