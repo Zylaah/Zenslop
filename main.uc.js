@@ -114,17 +114,24 @@
     // so we iterate manually to guarantee the right target.
     for (const sel of ["#tabbrowser-arrowscrollbox", "#zen-tabs-wrapper", "#tabbrowser-tabs"]) {
       const el = document.querySelector(sel);
-      if (el) { tabListCache = el; return el; }
+      if (el) {
+        log("tab list target:", sel);
+        tabListCache = el;
+        return el;
+      }
     }
+    warn("tab list: no matching element found");
     return null;
   }
   let lastTabPad = -1;
   let tabSpacer = null;
   function setTabListPadding(px) {
     if (px === lastTabPad) return;
-    lastTabPad = px;
     const list = getTabList();
     if (!list) return;
+    lastTabPad = px;  // only commit after confirming the element exists
+
+    log("tab list padding →", px);
 
     // Apply padding-bottom directly to the container.
     list.style.paddingBottom = px ? px + "px" : "";
