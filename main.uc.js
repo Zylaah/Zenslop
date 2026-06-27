@@ -77,7 +77,7 @@
     #zen-sidebar-pip-toggle {
       flex: 0 0 auto;
     }
-    #zen-sidebar-pip-tab-spacer {
+    [zen-sidebar-pip-spacer] {
       flex: 0 0 auto;
       width: 100%;
       pointer-events: none;
@@ -126,19 +126,26 @@
   }
 
   // Pad the tab list so the last tabs can scroll above the floating video.
-  // Use a dedicated spacer in the active workspace's normal tab section instead
-  // of margin on the bottom-most tab — the latter inflates zen-folder /
-  // tab-group containers and shows up as an empty folder row in the sidebar.
-  const SPACER_ID = "zen-sidebar-pip-tab-spacer";
+  // The spacer lives on the workspace scrollbox (sibling of the tab sections),
+  // not inside .zen-workspace-normal-tabs-section — Zen counts direct children
+  // of that section when deciding whether to show the "Clear" tabs button.
   let lastTabPad = -1;
   let scrollSpacer = null;
 
-  function getActiveWorkspaceTabsSection() {
-    const workspace =
+  function getActiveWorkspace() {
+    return (
       safe(() => window.gZenWorkspaces?.activeWorkspaceElement) ||
-      document.querySelector("zen-workspace[active]");
+      document.querySelector("zen-workspace[active]")
+    );
+  }
+
+  function getScrollPaddingParent() {
+    const workspace = getActiveWorkspace();
     if (workspace) {
-      return workspace.querySelector(".zen-workspace-normal-tabs-section");
+      return (
+        workspace.querySelector("arrowscrollbox.workspace-arrowscrollbox") ||
+        workspace.querySelector("arrowscrollbox")
+      );
     }
     return (
       document.querySelector("#zen-tabs-wrapper") ||
@@ -152,19 +159,14 @@
     lastTabPad = -1;
   }
 
-  function ensureScrollSpacer(section) {
-    if (scrollSpacer?.isConnected && scrollSpacer.parentElement === section) {
+  function ensureScrollSpacer(parent) {
+    if (scrollSpacer?.isConnected && scrollSpacer.parentElement === parent) {
       return scrollSpacer;
     }
     clearScrollSpacer();
     scrollSpacer = document.createElement("div");
-    scrollSpacer.id = SPACER_ID;
-    const periphery = section.querySelector("#tabbrowser-arrowscrollbox-periphery");
-    if (periphery) {
-      section.insertBefore(scrollSpacer, periphery);
-    } else {
-      section.appendChild(scrollSpacer);
-    }
+    scrollSpacer.setAttribute("zen-sidebar-pip-spacer", "true");
+    parent.appendChild(scrollSpacer);
     return scrollSpacer;
   }
 
@@ -174,12 +176,12 @@
       return;
     }
 
-    const section = getActiveWorkspaceTabsSection();
-    if (!section) return;
+    const parent = getScrollPaddingParent();
+    if (!parent) return;
 
-    if (px === lastTabPad && scrollSpacer?.parentElement === section) return;
+    if (px === lastTabPad && scrollSpacer?.parentElement === parent) return;
 
-    const spacer = ensureScrollSpacer(section);
+    const spacer = ensureScrollSpacer(parent);
     const value = px + "px";
     spacer.style.height = value;
     spacer.style.minHeight = value;
