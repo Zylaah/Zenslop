@@ -34,8 +34,6 @@
 
   const MUSIC_PLAYER_SELECTORS =
     "#zen-media-controls-toolbar, .zen-sidebar-bottom-buttons";
-  const TAB_LIST_SELECTORS =
-    "#tabbrowser-arrowscrollbox, #zen-tabs-wrapper, #tabbrowser-tabs";
   const PIP_BUTTON_SELECTORS = [
     '[id*="pictureinpicture" i]',
     '[class*="pictureinpicture" i]',
@@ -78,6 +76,12 @@
     }
     #zen-sidebar-pip-toggle {
       flex: 0 0 auto;
+    }
+    #zen-sidebar-pip-tab-spacer {
+      flex: 0 0 auto;
+      width: 100%;
+      pointer-events: none;
+      visibility: hidden;
     }
   `;
   document.documentElement.appendChild(styleEl);
@@ -122,53 +126,64 @@
   }
 
   // Pad the tab list so the last tabs can scroll above the floating video.
-  // Strategy: apply margin-bottom directly to the bottom-most visible tab.
-  // This always extends the scrollable content regardless of which ancestor
-  // is the actual scroll container — host-level padding on Zen's
-  // arrowscrollbox doesn't reach the shadow-DOM scrollbox.
+  // Use a dedicated spacer in the active workspace's normal tab section instead
+  // of margin on the bottom-most tab — the latter inflates zen-folder /
+  // tab-group containers and shows up as an empty folder row in the sidebar.
+  const SPACER_ID = "zen-sidebar-pip-tab-spacer";
   let lastTabPad = -1;
-  let paddedTab = null;
-  function findBottomMostTab() {
-    const tabs = document.querySelectorAll(".tabbrowser-tab");
-    let best = null,
-      bestBottom = -Infinity;
-    for (const t of tabs) {
-      if (t.hidden) continue;
-      const r = t.getBoundingClientRect();
-      if (r.width === 0 || r.height === 0) continue;
-      if (r.bottom > bestBottom) {
-        bestBottom = r.bottom;
-        best = t;
-      }
+  let scrollSpacer = null;
+
+  function getActiveWorkspaceTabsSection() {
+    const workspace =
+      safe(() => window.gZenWorkspaces?.activeWorkspaceElement) ||
+      document.querySelector("zen-workspace[active]");
+    if (workspace) {
+      return workspace.querySelector(".zen-workspace-normal-tabs-section");
     }
-    return best;
+    return (
+      document.querySelector("#zen-tabs-wrapper") ||
+      document.querySelector("#tabbrowser-tabs")
+    );
   }
-  function clearPaddedTab() {
-    if (paddedTab && paddedTab.isConnected) paddedTab.style.marginBottom = "";
-    paddedTab = null;
+
+  function clearScrollSpacer() {
+    if (scrollSpacer?.isConnected) scrollSpacer.remove();
+    scrollSpacer = null;
+    lastTabPad = -1;
   }
+
+  function ensureScrollSpacer(section) {
+    if (scrollSpacer?.isConnected && scrollSpacer.parentElement === section) {
+      return scrollSpacer;
+    }
+    clearScrollSpacer();
+    scrollSpacer = document.createElement("div");
+    scrollSpacer.id = SPACER_ID;
+    const periphery = section.querySelector("#tabbrowser-arrowscrollbox-periphery");
+    if (periphery) {
+      section.insertBefore(scrollSpacer, periphery);
+    } else {
+      section.appendChild(scrollSpacer);
+    }
+    return scrollSpacer;
+  }
+
   function setTabListPadding(px) {
-    const target = px > 0 ? findBottomMostTab() : null;
-    if (px === lastTabPad && target === paddedTab) return;
+    if (px <= 0) {
+      clearScrollSpacer();
+      return;
+    }
+
+    const section = getActiveWorkspaceTabsSection();
+    if (!section) return;
+
+    if (px === lastTabPad && scrollSpacer?.parentElement === section) return;
+
+    const spacer = ensureScrollSpacer(section);
+    const value = px + "px";
+    spacer.style.height = value;
+    spacer.style.minHeight = value;
     lastTabPad = px;
-
-    // Also pad every known candidate container — cheap and may help in
-    // browser variants where the host padding actually works.
-    const value = px > 0 ? px + "px" : "";
-    for (const sel of [
-      "#tabbrowser-arrowscrollbox",
-      "#zen-tabs-wrapper",
-      "#tabbrowser-tabs",
-    ]) {
-      const el = document.querySelector(sel);
-      if (el) el.style.paddingBottom = value;
-    }
-
-    if (target !== paddedTab) clearPaddedTab();
-    if (target) {
-      target.style.marginBottom = value;
-      paddedTab = target;
-    }
   }
 
   function getMediaTopEdge(walkDescendants) {
